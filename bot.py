@@ -195,6 +195,36 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=PORT,
+    )
+    bot_app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST,
+            channel_post,
+        )
+    )
+
+    bot_app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            search,
+        )
+    )
+
+    await bot_app.initialize()
+
+    await bot_app.bot.set_webhook(
+        url=f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+    )
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(setup())
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
     )        )
 
 
