@@ -1,26 +1,24 @@
 import os
 import sqlite3
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+CHANNEL_ID = int(os.environ["CHANNEL_ID"])
+WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable missing")
-
-if not CHANNEL_ID:
-    raise RuntimeError("CHANNEL_ID environment variable missing")
-
-CHANNEL_ID = int(CHANNEL_ID)
-
+PORT = int(os.environ.get("PORT", 8000))
 DB_FILE = "files.db"
+
+app = Flask(__name__)
+
+bot_app = (
+    Application.builder()
+    .token(BOT_TOKEN)
+    .updater(None)
+    .build()
+)
 
 
 def init_db():
@@ -29,9 +27,8 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            message_id INTEGER UNIQUE,
-            name TEXT,
+            message_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
             caption TEXT
         )
     """)
@@ -44,11 +41,14 @@ def save_file(message_id, name, caption):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         INSERT OR REPLACE INTO files
         (message_id, name, caption)
         VALUES (?, ?, ?)
-    """, (message_id, name, caption))
+        """,
+        (message_id, name, caption),
+    )
 
     conn.commit()
     conn.close()
@@ -58,13 +58,16 @@ def search_files(query):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         SELECT message_id, name
         FROM files
         WHERE name LIKE ?
-        ORDER BY id DESC
+        ORDER BY message_id DESC
         LIMIT 10
-    """, (f"%{query}%",))
+        """,
+        (f"%{query}%",),
+    )
 
     results = cur.fetchall()
     conn.close()
@@ -75,8 +78,33 @@ def search_files(query):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome!\n\n"
-        "File/movie ka naam bhejo aur main database me search karunga."
+        "Apne authorized database me file/movie name search karo."
     )
+
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+
+    if not query:
+        return
+
+    results = search_files(query)
+
+    if not results:
+        await update.message.reply_text(
+            "❌ Matching file nahi mili."
+        )
+        return
+
+    for message_id, name in results:
+        try:
+            await context.bot.copy_message(
+                chat_id=update.effective_chat.id,
+                from_chat_id=CHANNEL_ID,
+                message_id=message_id,
+            )
+        except Exception as e:
+            print("Copy error:", e)
 
 
 async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,8 +136,66 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_file(
             message.message_id,
             name,
-            caption
+            caption,
         )
+
+
+@app.get("/")
+def home():
+    return "Telegram bot is running!"
+
+
+@app.post(f"/webhook/{BOT_TOKEN}")
+async def webhook():
+    data = request.get_json(force=True)
+
+    update = Update.de_json(
+        data,
+        bot_app.bot,
+    )
+
+    await bot_app.process_update(update)
+
+    return "OK"
+
+
+async def setup():
+    init_db()
+
+    bot_app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    bot_app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST,
+            channel_post,
+        )
+    )
+
+    bot_app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            search,
+        )
+    )
+
+    await bot_app.initialize()
+
+    await bot_app.bot.set_webhook(
+        url=f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+    )
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(setup())
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+    )        )
 
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
